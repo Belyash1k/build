@@ -1,0 +1,23 @@
+name: Build X96 Mate Armbian
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: armbian/build@main
+        with:
+          armbian_token: ${{ secrets.GITHUB_TOKEN }}
+          armbian_board: "x96-mate"
+          armbian_kernel_branch: "current"
+          armbian_release: "trixie"
+          armbian_target: "build"
+          armbian_ui: "minimal"
+          armbian_runner_clean: "yes"
+          armbian_compress: "sha,img,xz"
