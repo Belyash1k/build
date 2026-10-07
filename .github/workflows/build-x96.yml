@@ -7,17 +7,47 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     steps:
-      - uses: armbian/build@main
+      - name: Checkout Armbian
+        uses: actions/checkout@v4
         with:
-          armbian_token: ${{ secrets.GITHUB_TOKEN }}
-          armbian_board: "x96-mate"
-          armbian_kernel_branch: "current"
-          armbian_release: "trixie"
-          armbian_target: "build"
-          armbian_ui: "minimal"
-          armbian_runner_clean: "yes"
-          armbian_compress: "sha,img,xz"
+          repository: armbian/build
+          path: armbian
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/hostedtoolcache
+          sudo docker system prune -af || true
+          df -h
+
+      - name: Build image
+        working-directory: armbian
+        run: |
+          sudo ./compile.sh requirements
+          sudo chown -R $USER:$USER .
+          ./compile.sh build \
+            BOARD=x96-mate \
+            BRANCH=current \
+            RELEASE=trixie \
+            BUILD_MINIMAL=yes \
+            BUILD_DESKTOP=no \
+            KERNEL_CONFIGURE=no \
+            COMPRESS_OUTPUTIMAGE=xz \
+            EXPERT=yes
+
+      - name: Show result
+        run: |
+          echo "=== OUTPUT IMAGES ==="
+          ls -lah armbian/output/images/
+          find armbian/output/images -maxdepth 1 -type f
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: x96-mate-armbian
+          path: |
+            armbian/output/images/*.img.xz
+            armbian/output/images/*.sha
+          if-no-files-found: error
