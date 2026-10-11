@@ -1,0 +1,37 @@
+name: Build Transpeed U-Boot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout my Nick fork
+        uses: actions/checkout@v4
+        with:
+          ref: v20250306
+          fetch-depth: 1
+
+      - name: Build U-Boot
+        run: |
+          ./compile.sh uboot \
+            BOARD=transpeed-8k618-t \
+            BRANCH=edge \
+            ARTIFACT_IGNORE_CACHE=yes \
+            CLEAN_LEVEL="make-atf,make-uboot"
+
+      - name: Show files
+        run: |
+          echo "=== OUTPUT ==="
+          find output -type f | grep -Ei 'u-boot|uboot' || true
+
+      - name: Upload U-Boot
+        uses: actions/upload-artifact@v4
+        with:
+          name: transpeed-8k618-t-uboot
+          path: |
+            output/debs/*
+            output/packages-hashed/**/*
+          if-no-files-found: error
