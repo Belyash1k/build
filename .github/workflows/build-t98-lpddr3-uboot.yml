@@ -1,5 +1,4 @@
-
-name: Build T98 LPDDR3 U-Boot
+name: Build T98 LPDDR3 Safe 1GiB Test
 
 on:
   workflow_dispatch:
@@ -8,7 +7,6 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-
     steps:
       - name: Install build dependencies
         run: |
@@ -29,7 +27,6 @@ jobs:
           set -euo pipefail
           cd u-boot
           base=https://raw.githubusercontent.com/iuncuim/manjaro-h616/main/uboot-t98-h2b-lp3
-
           for p in \
             0006-h616-tvbox-defconf.patch \
             0007-shrink-ram.patch \
@@ -38,28 +35,61 @@ jobs:
             git apply --check "../${p}"
             git apply "../${p}"
           done
-
           test -f configs/t98_h2b_lp3_defconfig
+
+      - name: Diagnostic DRAM correction and conservative 1GiB limit
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          p = Path('u-boot/arch/arm/mach-sunxi/dram_sun50i_h616.c')
+          src = p.read_text()
+
+          # The LPDDR3 patch references config.dram_shrink before the
+          # auto-detection function initializes it. Zero the struct first.
+          original = 'struct dram_config config;\n\tunsigned long size;'
+          replacement = 'struct dram_config config = { 0 };\n\tunsigned long size;'
+          if src.count(original) != 1:
+              raise SystemExit('Unexpected U-Boot layout: dram_config location not found')
+          src = src.replace(original, replacement, 1)
+
+          # Temporary diagnostic: the prior SPL reported 4 GiB even though
+          # the vendor loader finds 1536 MiB. A low 1GiB cap prevents U-Boot
+          # from relocating itself past physical RAM. It does NOT fix DRAM
+          # mapping or prove that the memory is stable.
+          original = '\tsize = mctl_calc_size(&config);\n'
+          replacement = (
+              '\tsize = mctl_calc_size(&config);\n'
+              '\tprintf("T98 DEBUG: rows=%u cols=%u ranks=%u width32=%u shrink=%u calculated=%lu MiB\\n",\n'
+              '\t       config.rows, config.cols, config.ranks,\n'
+              '\t       config.bus_full_width, config.dram_shrink, size >> 20);\n'
+              '\tif (size > 0x40000000UL)\n'
+              '\t\tsize = 0x40000000UL; /* diagnostic: maximum 1 GiB */\n'
+          )
+          if src.count(original) != 1:
+              raise SystemExit('Unexpected U-Boot layout: mctl_calc_size location not found')
+          src = src.replace(original, replacement, 1)
+          p.write_text(src)
+          print('Updated DRAM initialization, logging, and temporary 1GiB cap')
+          PYCODE
 
       - name: Build ARM Trusted Firmware
         run: |
           make -C trusted-firmware-a -j4 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             PLAT=sun50i_h616 SUNXI_SETUP_REGULATORS=0 bl31
-
           cp trusted-firmware-a/build/sun50i_h616/release/bl31.bin u-boot/bl31.bin
 
       - name: Build U-Boot for T98 1.5GB LPDDR3
         run: |
           make -C u-boot CROSS_COMPILE=aarch64-linux-gnu- t98_h2b_lp3_defconfig
           make -C u-boot CROSS_COMPILE=aarch64-linux-gnu- -j4
-
           test -s u-boot/u-boot-sunxi-with-spl.bin
           ls -lh u-boot/u-boot-sunxi-with-spl.bin
 
       - name: Upload only the test bootloader
         uses: actions/upload-artifact@v4
         with:
-          name: t98-lpddr3-uboot
+          name: t98-lpddr3-test1g-uboot
           path: u-boot/u-boot-sunxi-with-spl.bin
           if-no-files-found: error
