@@ -1,4 +1,4 @@
-name: Build T98 LPDDR3 Safe 1GiB Test
+name: Build T98 LPDDR3 Corrected DRAM Map
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - name: Install build dependencies
+      - name: Install compiler dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -17,12 +17,12 @@ jobs:
             device-tree-compiler libssl-dev libgnutls28-dev \
             python3 python3-dev python3-setuptools python3-pyelftools
 
-      - name: Download exact source versions
+      - name: Download U-Boot and ARM Trusted Firmware
         run: |
           git clone --depth 1 --branch v2024.01 https://github.com/u-boot/u-boot.git u-boot
           git clone --depth 1 --branch v2.9.0 https://github.com/ARM-software/arm-trusted-firmware.git trusted-firmware-a
 
-      - name: Apply T98 LPDDR3 patches
+      - name: Apply board and memory patches
         run: |
           set -euo pipefail
           cd u-boot
@@ -37,7 +37,7 @@ jobs:
           done
           test -f configs/t98_h2b_lp3_defconfig
 
-      - name: Diagnostic DRAM correction and conservative 1GiB limit
+      - name: Use verified T98 LPDDR3 geometry and shrunken address map
         run: |
           set -euo pipefail
           python3 - <<'PYCODE'
@@ -45,32 +45,50 @@ jobs:
           p = Path('u-boot/arch/arm/mach-sunxi/dram_sun50i_h616.c')
           src = p.read_text()
 
-          # The LPDDR3 patch references config.dram_shrink before the
-          # auto-detection function initializes it. Zero the struct first.
-          original = 'struct dram_config config;\n\tunsigned long size;'
-          replacement = 'struct dram_config config = { 0 };\n\tunsigned long size;'
-          if src.count(original) != 1:
-              raise SystemExit('Unexpected U-Boot layout: dram_config location not found')
-          src = src.replace(original, replacement, 1)
+          # SPL previously auto-detected 2 or 4 GiB, inconsistently.
+          # The stock Android BOOT0 reports 1.5 GiB LPDDR3, 32-bit, 2 ranks.
+          # Our last diagnostic detected rows=15 cols=10 ranks=2 full width,
+          # which represents a 2 GiB nominal layout. The T98 shrink patch
+          # has a special address mapping for an asymmetric 1.5 GiB layout,
+          # but its automatic flag detection never activated (shrink=0).
+          old = '''\tmctl_auto_detect_rank_width(&para, &config);
+          \tmctl_auto_detect_dram_size(&para, &config);
 
-          # Temporary diagnostic: the prior SPL reported 4 GiB even though
-          # the vendor loader finds 1536 MiB. A low 1GiB cap prevents U-Boot
-          # from relocating itself past physical RAM. It does NOT fix DRAM
-          # mapping or prove that the memory is stable.
-          original = '\tsize = mctl_calc_size(&config);\n'
-          replacement = (
-              '\tsize = mctl_calc_size(&config);\n'
-              '\tprintf("T98 DEBUG: rows=%u cols=%u ranks=%u width32=%u shrink=%u calculated=%lu MiB\\n",\n'
-              '\t       config.rows, config.cols, config.ranks,\n'
-              '\t       config.bus_full_width, config.dram_shrink, size >> 20);\n'
-              '\tif (size > 0x40000000UL)\n'
-              '\t\tsize = 0x40000000UL; /* diagnostic: maximum 1 GiB */\n'
-          )
-          if src.count(original) != 1:
-              raise SystemExit('Unexpected U-Boot layout: mctl_calc_size location not found')
-          src = src.replace(original, replacement, 1)
+          \tmctl_core_init(&para, &config);
+
+          \tsize = mctl_calc_size(&config);
+          '''
+          new = '''\tconfig = (struct dram_config){ 0 };
+          \tmctl_auto_detect_rank_width(&para, &config);
+          \tmctl_auto_detect_dram_size(&para, &config);
+          \tprintf("T98 DETECTED: rows=%u cols=%u ranks=%u width32=%u shrink=%u\\n",
+          \t       config.rows, config.cols, config.ranks,
+          \t       config.bus_full_width, config.dram_shrink);
+
+          \t/* Verified Android DRAM size 1536 MiB, 32-bit bus, two ranks.
+          \t * Force the 2 GiB nominal geometry with 1.5 GiB asymmetric map.
+          \t * SD-card-only diagnostic: no writes to internal eMMC.
+          \t */
+          \tconfig.rows = 15;
+          \tconfig.cols = 10;
+          \tconfig.ranks = 2;
+          \tconfig.bus_full_width = 1;
+          \tconfig.dram_shrink = true;
+          \tprintf("T98 FORCED: rows=%u cols=%u ranks=%u width32=%u shrink=%u\\n",
+          \t       config.rows, config.cols, config.ranks,
+          \t       config.bus_full_width, config.dram_shrink);
+          \tif (!mctl_core_init(&para, &config))
+          \t\tpanic("T98: Final DRAM training failed\\n");
+          \tprintf("T98: final memory map initialized\\n");
+
+          \tsize = mctl_calc_size(&config);
+          \tprintf("T98: computed RAM = %lu MiB\\n", size >> 20);
+          '''
+          if src.count(old) != 1:
+              raise SystemExit('U-Boot source differs: expected DRAM init block not found')
+          src = src.replace(old, new, 1)
           p.write_text(src)
-          print('Updated DRAM initialization, logging, and temporary 1GiB cap')
+          print('Applied T98 1.5 GiB memory map and added diagnostics')
           PYCODE
 
       - name: Build ARM Trusted Firmware
@@ -80,16 +98,16 @@ jobs:
             PLAT=sun50i_h616 SUNXI_SETUP_REGULATORS=0 bl31
           cp trusted-firmware-a/build/sun50i_h616/release/bl31.bin u-boot/bl31.bin
 
-      - name: Build U-Boot for T98 1.5GB LPDDR3
+      - name: Build T98 U-Boot
         run: |
           make -C u-boot CROSS_COMPILE=aarch64-linux-gnu- t98_h2b_lp3_defconfig
           make -C u-boot CROSS_COMPILE=aarch64-linux-gnu- -j4
           test -s u-boot/u-boot-sunxi-with-spl.bin
           ls -lh u-boot/u-boot-sunxi-with-spl.bin
 
-      - name: Upload only the test bootloader
+      - name: Save SD-card test bootloader
         uses: actions/upload-artifact@v4
         with:
-          name: t98-lpddr3-test1g-uboot
+          name: t98-lpddr3-forced-1536m-uboot
           path: u-boot/u-boot-sunxi-with-spl.bin
           if-no-files-found: error
