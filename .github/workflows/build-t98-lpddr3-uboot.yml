@@ -1,3 +1,4 @@
+
 name: Build T98 LPDDR3 U-Boot
 
 on:
@@ -7,6 +8,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+
     steps:
       - name: Install build dependencies
         run: |
@@ -27,15 +29,16 @@ jobs:
           set -euo pipefail
           cd u-boot
           base=https://raw.githubusercontent.com/iuncuim/manjaro-h616/main/uboot-t98-h2b-lp3
+
           for p in \
             0006-h616-tvbox-defconf.patch \
             0007-shrink-ram.patch \
-            0010-sunxi-add-barrier-in-memory-check.patch \
-            0011-sunxi-H616-GPU-enable-hack.patch; do
+            0010-sunxi-add-barrier-in-memory-check.patch; do
             curl --fail --location --retry 3 --output "../${p}" "${base}/${p}"
             git apply --check "../${p}"
             git apply "../${p}"
           done
+
           test -f configs/t98_h2b_lp3_defconfig
 
       - name: Build ARM Trusted Firmware
@@ -43,12 +46,14 @@ jobs:
           make -C trusted-firmware-a -j4 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             PLAT=sun50i_h616 SUNXI_SETUP_REGULATORS=0 bl31
+
           cp trusted-firmware-a/build/sun50i_h616/release/bl31.bin u-boot/bl31.bin
 
       - name: Build U-Boot for T98 1.5GB LPDDR3
         run: |
           make -C u-boot CROSS_COMPILE=aarch64-linux-gnu- t98_h2b_lp3_defconfig
           make -C u-boot CROSS_COMPILE=aarch64-linux-gnu- -j4
+
           test -s u-boot/u-boot-sunxi-with-spl.bin
           ls -lh u-boot/u-boot-sunxi-with-spl.bin
 
